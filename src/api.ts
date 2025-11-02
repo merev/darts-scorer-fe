@@ -50,10 +50,28 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || '/api';
+// ---------- Utils ----------
+const ENV_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || '/api';
 
-async function request<T=any>(path: string, opts: RequestInit & { json?: any } = {}): Promise<T> {
-  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+function joinUrl(base: string, path: string) {
+  return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function safeJson(text: string) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+// Normalize any list-ish response into an array
+function arrayify<T>(v: unknown, field?: string): T[] {
+  if (Array.isArray(v)) return v as T[];
+  if (v && field && Array.isArray((v as any)[field])) return (v as any)[field] as T[];
+  return [];
+}
+
+// ---------- Core fetch ----------
+async function request<T = any>(path: string, opts: RequestInit & { json?: any } = {}): Promise<T> {
+  const url = path.startsWith('http') ? path : joinUrl(ENV_BASE, path);
+
   const { json, headers, ...rest } = opts;
   const init: RequestInit = {
     ...rest,
@@ -61,19 +79,32 @@ async function request<T=any>(path: string, opts: RequestInit & { json?: any } =
       ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...(headers || {}),
     },
-    body: json !== undefined ? JSON.stringify(json) : rest.body,
+    body: json !== undefined ? JSON.stringify(json) : (rest as any).body,
   };
+
   const res = await fetch(url, init);
+
+  // Gracefully handle 204/empty
+  if (res.status === 204) {
+    // @ts-expect-error allow void returns
+    return undefined as T;
+  }
+
   const text = await res.text();
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') && text ? safeJson(text) : (text as any);
-  if (!res.ok) throw new ApiError((data?.message || text || `HTTP ${res.status}`) as string, { status: res.status, body: data });
+
+  if (!res.ok) {
+    throw new ApiError((data?.message || text || `HTTP ${res.status}`) as string, {
+      status: res.status,
+      body: data
+    });
+  }
+
   return data as T;
 }
 
-const safeJson = (t: string) => { try { return JSON.parse(t); } catch { return null; } };
-
-// ----- Endpoints -----
+// ---------- Endpoints ----------
 export const api = {
   // games
   getGame: (id: UUID) => request<Game>(`/games/${id}`),
@@ -82,22 +113,34 @@ export const api = {
     request<void>(`/games/${id}/throw`, { method: 'POST', json: dart }),
   undo: (id: UUID) => request<void>(`/games/${id}/undo`, { method: 'POST' }),
 
-  // players
-  listPlayers: () => request<Player[]>(`/players`),
+  // players  (normalize so UI never crashes on `.map`)
+  listPlayers: async () => {
+    const raw = await request<any>(`/players`);
+    return arrayify<Player>(raw, 'players');
+  },
   createPlayer: (nickname: string) => request<Player>(`/players`, { method: 'POST', json: { nickname } }),
   deletePlayer: (id: UUID) => request<void>(`/players/${id}`, { method: 'DELETE' }),
 
   // stats
-  leaderboards: (metric: string) => request<LeaderboardItem[]>(`/stats/leaderboards?metric=${encodeURIComponent(metric)}`),
+  leaderboards: async (metric: string) => {
+    const raw = await request<any>(`/stats/leaderboards?metric=${encodeURIComponent(metric)}`);
+    return arrayify<LeaderboardItem>(raw, 'items');
+  },
 };
 
+// ---------- WebSocket URL helper (respects ENV_BASE) ----------
 export function wsUrl(path: string) {
-  const rel = (import.meta as any)?.env?.VITE_API_BASE_URL || '/api';
-  const isRelative = rel.startsWith('/');
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  if (isRelative) return `${proto}://${location.host}${path}`;
-  const host = rel.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-  return `${proto}://${host}${path}`;
+  const apiBase = ENV_BASE;
+
+  if (apiBase.startsWith('/')) {
+    // same-origin, keep the /api prefix
+    return `${proto}://${location.host}${joinUrl(apiBase, path)}`;
+  }
+  // absolute base like http://raccoon-api-stg:8000
+  const host = apiBase.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const basePath = apiBase.replace(/^https?:\/\/[^/]+/, ''); // "/api" or ""
+  return `${proto}://${host}${joinUrl(basePath || '/', path)}`;
 }
 
 export default api;

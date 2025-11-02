@@ -5,34 +5,62 @@ import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
 import api, { Player } from "../api";
 
+// Defensive: whatever the backend (or mock) returns, make it an array of Player
+function normalizePlayers(input: unknown): Player[] {
+  if (Array.isArray(input)) return input as Player[];
+  if (input && Array.isArray((input as any).players)) return (input as any).players as Player[];
+  return [];
+}
+
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [name, setName] = useState<string>('');
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
 
   async function load() {
     try {
-      const list = await api.listPlayers();
-      setPlayers(list);
-    } catch (e: any) { setErr(e.message); }
+      setLoading(true);
+      setErr(null);
+      const raw = await api.listPlayers();     // may be [], {players:[...]}, null, etc. in prod
+      setPlayers(normalizePlayers(raw));
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to load players');
+      setPlayers([]);                          // keep it an array so render never crashes
+    } finally {
+      setLoading(false);
+    }
   }
+
   useEffect(() => { load(); }, []);
 
   async function add() {
     const n = name.trim(); if (!n) return;
     try {
+      setLoading(true);
       await api.createPlayer(n);
       setName('');
-      load();
-    } catch (e: any) { setErr(e.message); }
+      await load();
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to add player');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function remove(id: string) {
     try {
+      setLoading(true);
       await api.deletePlayer(id);
-      load();
-    } catch (e: any) { setErr(e.message); }
+      await load();
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to delete player');
+    } finally {
+      setLoading(false);
+    }
   }
+
+  const safePlayers = Array.isArray(players) ? players : [];  // last line of defense
 
   return (
     <main className="mx-auto max-w-5xl p-4 sm:p-6">
@@ -42,7 +70,7 @@ export default function PlayersPage() {
         <CardHeader title="Add player" />
         <div className="flex gap-2">
           <Input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Nickname" />
-          <Button onClick={add}>Add</Button>
+          <Button onClick={add} disabled={loading}>Add</Button>
         </div>
       </Card>
 
@@ -59,16 +87,19 @@ export default function PlayersPage() {
               </tr>
             </thead>
             <tbody>
-              {players.map(p => (
+              {safePlayers.map(p => (
                 <tr key={p.id} className="border-b last:border-0">
                   <td className="px-3 py-2">{p.nickname}</td>
                   <td className="px-3 py-2">
-                    <Button variant="danger" size="sm" onClick={()=>remove(p.id)}>Delete</Button>
+                    <Button variant="danger" size="sm" onClick={()=>remove(p.id)} disabled={loading}>Delete</Button>
                   </td>
                 </tr>
               ))}
-              {players.length === 0 && (
+              {safePlayers.length === 0 && !loading && (
                 <tr><td className="px-3 py-3 text-neutral-600" colSpan={2}>No players yet.</td></tr>
+              )}
+              {loading && (
+                <tr><td className="px-3 py-3 text-neutral-600" colSpan={2}>Loading…</td></tr>
               )}
             </tbody>
           </table>
