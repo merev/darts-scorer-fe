@@ -1,0 +1,66 @@
+// Small fetch wrapper + endpoint helpers
+
+const API_BASE = import.meta?.env?.VITE_API_BASE_URL || '/api';
+
+export class ApiError extends Error {
+  constructor(message, { status, body } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function request(path, { method = 'GET', headers = {}, body } = {}) {
+  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+  const opts = {
+    method,
+    headers: {
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  };
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json') && text ? safeJson(text) : text;
+  if (!res.ok) {
+    throw new ApiError(data?.message || text || `HTTP ${res.status}`, { status: res.status, body: data });
+  }
+  return data;
+}
+
+const safeJson = (t) => { try { return JSON.parse(t); } catch { return null; } };
+
+// ----- Endpoints -----
+export const api = {
+  // games
+  getGame: (id) => request(`/games/${id}`),
+  createGame: (payload) => request('/games', { method: 'POST', body: payload }),
+  throw: (id, dart) => request(`/games/${id}/throw`, { method: 'POST', body: dart }),
+  undo: (id) => request(`/games/${id}/undo`, { method: 'POST' }),
+
+  // players
+  listPlayers: () => request('/players'),
+  createPlayer: (nickname) => request('/players', { method: 'POST', body: { nickname } }),
+  deletePlayer: (id) => request(`/players/${id}`, { method: 'DELETE' }),
+
+  // stats
+  leaderboards: (metric) => request(`/stats/leaderboards?metric=${encodeURIComponent(metric)}`),
+};
+
+// ----- WS helpers -----
+export function wsUrl(path) {
+  // path like `/ws/games/:id`
+  const rel = (import.meta?.env?.VITE_API_BASE_URL || '/api');
+  const isRelative = rel.startsWith('/');
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  if (isRelative) {
+    return `${proto}://${location.host}${path}`;
+  }
+  const host = rel.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  return `${proto}://${host}${path}`;
+}
+
+export default api;
